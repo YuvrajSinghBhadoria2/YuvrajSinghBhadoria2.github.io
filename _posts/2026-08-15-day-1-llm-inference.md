@@ -33,6 +33,8 @@ During decode, each new token must look at all previous tokens. To avoid recompu
 
 ![KV-Cache: tokens produce K/V states that accumulate in GPU memory, growing with context length](/assets/kv-cache-evolution.png)
 
+![KV-cache Q·Kᵀ·V computation and caching](/assets/kv-cache-computation.png)
+
 Longer conversation means more tokens means bigger KV-cache means more GPU memory. Context length is a memory problem, not just a compute problem.
 
 My take: at serving time the KV-cache is often what fills the GPU, not the model weights. That is why "support 100k context" is mostly an infrastructure promise.
@@ -42,6 +44,8 @@ My take: at serving time the KV-cache is often what fills the GPU, not the model
 Serving one request at a time leaves the GPU idle between decode steps. Batching processes multiple requests together, but the naive implementation pads every request to the longest one and reserves max-length KV-cache for each, wasting memory that could hold more users.
 
 ![Naive batching vs PagedAttention: large reserved KV regions with unused space versus dynamically allocated physical KV blocks via a block table](/assets/pagedattention-comparison.png)
+
+![PagedAttention block table: logical to physical blocks](/assets/pagedattention-blocktable.png)
 
 In the worst case (three tiny requests padded to a huge max), about 98% of reserved cache is empty. Real traffic wastes less, often 20 to 50%, but the principle holds: reserved memory you do not use is capacity you cannot sell.
 
@@ -60,6 +64,10 @@ My take: PagedAttention does not make the attention math faster. It makes memory
 Static batching waits for the slowest request to finish before admitting new ones. Continuous (iteration-level) batching admits a new request the moment a slot frees and evicts finished ones immediately.
 
 ![Continuous batching: a central GPU engine processing multiple request cards concurrently, finished requests exit and new ones enter the freed slots, with GPU utilization rising](/assets/continuous-vs-static-batching.png)
+
+![Static, dynamic, and continuous batching types](/assets/batching-types.png)
+
+![Naive / static batching](/assets/naive-static-batching.png)
 
 Real measurements (always ask: versus what baseline, on what model, on what hardware): Anyscale reported vLLM about 23x over naive HuggingFace Transformers (OPT-13B, A100), roughly 2x over TGI, and Orca reported 36.9x over FasterTransformer (GPT-3 175B). None is universal, but the mechanism is durable: re-deciding the batch every decode step keeps the GPU full.
 
@@ -123,16 +131,6 @@ Optimize those three and you cut the bill without touching model quality. That i
 ## Next (Day 2)
 
 Quantization. Shrink the model weights so each decode step loads less from memory, then re-measure. We will see if ~308 tok/s goes up, and be honest about how much of the gain is real versus measurement noise.
-
-## Additional diagrams
-
-![KV-cache Q·Kᵀ·V computation and caching](/assets/kv-cache-computation.png)
-
-![PagedAttention block table: logical to physical blocks](/assets/pagedattention-blocktable.png)
-
-![Static, dynamic, and continuous batching types](/assets/batching-types.png)
-
-![Naive / static batching](/assets/naive-static-batching.png)
 
 ## Visual references
 
