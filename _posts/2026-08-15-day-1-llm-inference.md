@@ -134,7 +134,7 @@ Quantization. Shrink the model weights so each decode step loads less from memor
 
 ## Visual references
 
-The diagrams in this article are original illustrations created for this series. Their technical concepts were informed by NVIDIA's inference optimization material, the JAX Scaling Book's inference chapter (MIT licensed), and the PagedAttention/vLLM work. Source images per component:
+The diagrams in this article are original illustrations created for this article. Their technical concepts were informed by NVIDIA's inference optimization material, the JAX Scaling Book's inference chapter (MIT licensed), and the PagedAttention/vLLM work. Source images per component:
 
 - Prefill vs Decode: NVIDIA KV-caching diagram (`developer-blogs.nvidia.com/wp-content/uploads/2023/11/key-value-caching_.png`); JAX `cached-inference.png` (`raw.githubusercontent.com/jax-ml/scaling-book/main/assets/img/cached-inference.png`).
 - KV Cache: NVIDIA KV-caching diagram (above); JAX `naive-inference.png` (`raw.githubusercontent.com/jax-ml/scaling-book/main/assets/img/naive-inference.png`).
