@@ -5,6 +5,7 @@ categories: [llm, inference, optimization]
 permalink: /day-1/
 ---
 
+By Yuvraj Singh Bhadoria.
 
 This is the part of AI engineering that is badly understaffed and, in my opinion, where a lot of real money is quietly saved or wasted. I am writing these as I learn, measuring everything instead of trusting marketing.
 
