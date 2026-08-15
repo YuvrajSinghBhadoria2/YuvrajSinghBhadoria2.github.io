@@ -43,11 +43,9 @@ My take: at serving time the KV-cache is often what fills the GPU, not the model
 
 Serving one request at a time leaves the GPU idle between decode steps. Batching processes multiple requests together, but the naive implementation pads every request to the longest one and reserves max-length KV-cache for each, wasting memory that could hold more users.
 
-[Image 2]
-
 ![Naive batching vs PagedAttention: large reserved KV regions with unused space versus dynamically allocated physical KV blocks via a block table](/assets/pagedattention-comparison.png)
 
-![PagedAttention block table: logical to physical blocks](/assets/pagedattention-blocktable.png)
+![Naive / static batching](/assets/naive-static-batching.png)
 
 In the worst case (three tiny requests padded to a huge max), about 98% of reserved cache is empty. Real traffic wastes less, often 20 to 50%, but the principle holds: reserved memory you do not use is capacity you cannot sell.
 
@@ -57,7 +55,7 @@ My take: reserving memory you do not use is like renting a warehouse and leaving
 
 PagedAttention borrows virtual-memory paging from operating systems. Instead of one big reserved block per request, the KV-cache is split into small fixed-size blocks, allocated only as needed, anywhere in memory, tracked by a block table.
 
-[Image 1]
+![PagedAttention block table: logical to physical blocks](/assets/pagedattention-blocktable.png)
 
 The same illustration above (Naive vs PagedAttention) is the core idea: no fragmentation, continuous batching (finished requests free blocks instantly), and prefix sharing across users with the same system prompt. Result: far more concurrent users on the same hardware, which means higher throughput. This is the core idea behind vLLM.
 
@@ -70,8 +68,6 @@ Static batching waits for the slowest request to finish before admitting new one
 ![Continuous batching: a central GPU engine processing multiple request cards concurrently, finished requests exit and new ones enter the freed slots, with GPU utilization rising](/assets/continuous-vs-static-batching.png)
 
 ![Static, dynamic, and continuous batching types](/assets/batching-types.png)
-
-![Naive / static batching](/assets/naive-static-batching.png)
 
 Real measurements (always ask: versus what baseline, on what model, on what hardware): Anyscale reported vLLM about 23x over naive HuggingFace Transformers (OPT-13B, A100), roughly 2x over TGI, and Orca reported 36.9x over FasterTransformer (GPT-3 175B). None is universal, but the mechanism is durable: re-deciding the batch every decode step keeps the GPU full.
 
