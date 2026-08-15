@@ -2,6 +2,7 @@
 title: "Why LLM Inference Is Expensive: Prefill, Decode, KV-Cache, and PagedAttention (with a Measured Baseline)"
 date: 2026-08-15
 categories: [llm, inference, optimization]
+permalink: /day-1/
 ---
 
 
