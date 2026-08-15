@@ -43,6 +43,8 @@ My take: at serving time the KV-cache is often what fills the GPU, not the model
 
 Serving one request at a time leaves the GPU idle between decode steps. Batching processes multiple requests together, but the naive implementation pads every request to the longest one and reserves max-length KV-cache for each, wasting memory that could hold more users.
 
+[Image 2]
+
 ![Naive batching vs PagedAttention: large reserved KV regions with unused space versus dynamically allocated physical KV blocks via a block table](/assets/pagedattention-comparison.png)
 
 ![PagedAttention block table: logical to physical blocks](/assets/pagedattention-blocktable.png)
@@ -54,6 +56,8 @@ My take: reserving memory you do not use is like renting a warehouse and leaving
 ## 4. PagedAttention (vLLM): the fix
 
 PagedAttention borrows virtual-memory paging from operating systems. Instead of one big reserved block per request, the KV-cache is split into small fixed-size blocks, allocated only as needed, anywhere in memory, tracked by a block table.
+
+[Image 1]
 
 The same illustration above (Naive vs PagedAttention) is the core idea: no fragmentation, continuous batching (finished requests free blocks instantly), and prefix sharing across users with the same system prompt. Result: far more concurrent users on the same hardware, which means higher throughput. This is the core idea behind vLLM.
 
