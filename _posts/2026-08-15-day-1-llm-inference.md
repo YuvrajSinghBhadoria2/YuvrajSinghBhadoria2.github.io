@@ -1,11 +1,3 @@
----
-title: "Why LLM Inference Is Expensive: Prefill, Decode, KV-Cache, and PagedAttention (with a Measured Baseline)"
-date: 2026-08-15
-categories: [llm, inference, optimization]
----
-# Why LLM Inference Is Expensive: Prefill, Decode, KV-Cache, and PagedAttention (with a Measured Baseline)
-
-Day 1 of my series on LLM inference optimization. By Yuvraj Singh Bhadoria.
 
 This is the part of AI engineering that is badly understaffed and, in my opinion, where a lot of real money is quietly saved or wasted. I am writing these as I learn, measuring everything instead of trusting marketing.
 
