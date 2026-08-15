@@ -1,0 +1,6 @@
+title: Yuvraj Singh Bhadoria
+description: >-
+  LLM inference optimization blog series and ML systems portfolio.
+  Day 1: why LLM inference is expensive (prefill, decode, KV-cache, PagedAttention).
+theme: minima
+show_excerpts: true
