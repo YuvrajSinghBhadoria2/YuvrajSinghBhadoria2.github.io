@@ -64,6 +64,8 @@ Three come back nearly exact, the smallest lands at 0.0667, error 0.017. Now add
 
 One refinement real systems use: the ruler need not be symmetric. You can slide it so the first mark sits at the smallest weight, not at minus the largest. That needs a second stored number, the zero point, and is called asymmetric quantization. In symbols, w_q = round(w / scale) + zero_point, and the value used at inference is (w_q - zero_point) * scale. The zero point shifts the ruler so its marks line up with the data's actual minimum. It wastes no marks on empty range. Symmetric quantization, with zero point at 0, is what we used above and is simpler.
 
+The symbols: `w` is the real weight, `w_q` is the stored integer (round(w / scale) plus the zero point), `zero_point` is the shift that lines the first mark up with the data's minimum, and `scale` is the step width from the formula above.
+
 A second refinement is group wise quantization: instead of one scale per whole row, use one scale per small group of 128 columns. More scales, finer fit, and that is how INT4 stays accurate.
 
 My take: if you remember one formula, remember r' = q * scale. Everything else is just deciding where to put the marks and how many scales to keep.
@@ -141,6 +143,8 @@ SmoothQuant attacks outliers from the other side. The layer is Y = X times W. Fo
 
 Concretely, for each channel it sets s equal to (max of X in that channel, to the power alpha) divided by (max of W in that channel, to the power 1 minus alpha), with alpha around 0.5. The dial alpha decides how much difficulty moves: at 0 all of it stays in X, at 1 all of it moves to W.
 
+The symbols: `X` is the activation for that channel, `W` is the weight for that channel, `s` is the per channel scale SmoothQuant computes, and `alpha` is the dial, about 0.5, that splits the difficulty between activations and weights.
+
 X becomes clean INT8 using a scale per token, W absorbs the variation and quantizes well per channel. Both sides INT8, no FP16 half, no split penalty. SmoothQuant moved the fragile outlier difficulty out of activations and into the calm weights.
 
 ![SmoothQuant migrates scaling from activations into weights so the activation distribution becomes easy to quantize to INT8](/assets/day2-smoothquant.png)
@@ -148,7 +152,7 @@ X becomes clean INT8 using a scale per token, W absorbs the variation and quanti
 
 GPTQ pushes weights to INT4. Its insight: minimize error in the layer output Y, not per weight. It quantizes one column, then immediately adjusts the not yet quantized columns to cancel that column's error in Y. Each mistake is absorbed by columns still ahead. By the end every weight is INT4 but the output stays close to the original. The mental model: paint one strip, fix the spill beside it before moving on.
 
-How does it know each weight's importance to Y? From the calibration data. The sensitivity of Y to a weight is captured by the activation covariance, the matrix X transpose X over the calibration set, which stands in for the Hessian. Weights whose columns matter more to Y get corrected harder. GPTQ also uses group wise quantization, one scale per 128 columns, which is the q_group_size you see in the AWQ code below.
+How does it know each weight's importance to Y? From the calibration data. The sensitivity of Y to a weight is captured by the activation covariance, the matrix X transpose X over the calibration set, which stands in for the Hessian. Weights whose columns matter more to Y get corrected harder. GPTQ also uses group wise quantization, one scale per 128 columns, which is the q_group_size you see in the AWQ code below. The symbols: `q_group_size` is how many columns share one scale (128 here), and the Hessian is the stand in for how sensitive the layer output is to each weight, estimated from the activation covariance X transpose X over a small calibration set.
 
 AWQ agrees outliers matter but protects before quantizing. It finds the salient channels from the calibration activations: a channel is salient if its average input magnitude is large, because multiplying a large input by that weight drives the output.
 
