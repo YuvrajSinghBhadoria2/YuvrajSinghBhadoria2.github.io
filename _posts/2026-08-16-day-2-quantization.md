@@ -40,6 +40,15 @@ q     = round( r / scale )     # the mark number we store
 r'    = q * scale              # the value we use at inference
 ```
 
+Here is what each symbol means:
+
+- `b` is the number of bits. INT4 means b = 4, so 2^b - 1 = 15 marks. INT8 means b = 8, so 2^b - 1 = 255 marks. More bits give more marks and a smaller error.
+- `max_abs` is the largest absolute weight in the tensor. It sets how wide the ruler is.
+- `r` is the real weight, a full precision number like 0.37, that we are compressing.
+- `q` is the integer mark we actually store. It is round(r / scale), a small whole number.
+- `r'` (read r prime) is the value we get back at inference: q times scale. It is close to r but not exact.
+- `scale` is the step width between two marks. It is the one extra number we store next to the marks.
+
 Scale is the step width. Divide the weight by the scale, round to the nearest mark, store q, and at inference multiply q back by scale to get r'. The error between r and r' can never exceed half a step.
 
 A real example makes it stick. Four weights [0.8, -0.2, 0.05, -1.0], INT4, so 15 steps. Biggest absolute value is 1.0, scale = 0.0667.
