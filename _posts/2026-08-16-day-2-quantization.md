@@ -87,7 +87,7 @@ Precision is just how many bits we give each number. More bits, more room to be 
 
 - FP32, 4 bytes. Training only. Too big to serve.
 - FP16, 2 bytes. The normal way to serve. Half precision.
-- BF16, 2 bytes. Same size as FP16 but keeps a wider range, so training stays stable. For serving it is close to FP16.
+- BF16, 2 bytes. Same size as FP16 but can hold both tiny and huge numbers, so training does not break. For serving it is close to FP16.
 - INT8, 1 byte. Half the size of FP16. Now we are quantizing.
 - FP8, 1 byte. A format built for AI math, but only on new GPUs like H100 or L40. Most of us cannot use it yet.
 - INT4 or NF4, half a byte. A quarter of FP16. This is where the real memory win comes from.
@@ -100,11 +100,11 @@ My take: pick the format your hardware can actually run. A T4 does INT8 and INT4
 
 Three things in a model hold numbers: the weights, the activations, and the KV cache. They are not equally easy to quantize.
 
-Weights are the easiest. They are fixed after training. You can look at the whole weight matrix once, pick scales, and store the small version. Do it once, use it forever.
+Weights are the easiest. They are fixed after training. You can look at the whole block of weights once, pick scales, and store the small version. Do it once, use it forever.
 
-The KV cache is next. It grows per token, so it behaves a bit like activations, but it is bounded per token and per head, so a per token scale works well.
+The KV cache is next. It grows per token, so it behaves a bit like activations, but it has a fixed size per token and per attention head, so one scale per token works well.
 
-Activations are the trap. They are the numbers flowing through the model at inference time, and they change with every input. You cannot precompute a scale, because you do not know the input yet. Worse, activations have rare huge spikes, and those spikes break naive quantization. Most of the clever work in this post is about activations, not weights.
+Activations are the trap. They are the numbers the model computes as it runs, and they change with every input. You cannot pick the scale ahead of time, because you do not know the input yet. Worse, activations have rare huge spikes, and those spikes break the simple rounding method. Most of the clever work in this post is about activations, not weights.
 
 ![Weights are static and easy to quantize, the KV cache is bounded per token, and activations are dynamic with outlier spikes](/assets/day2-what-gets-quantized.png)
 *Weights are easy, the KV cache is easy-ish, activations are the trap.*
@@ -141,8 +141,6 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 ```
 
-Net memory about half, accuracy near FP16. It proves the idea with the smallest possible change.
-
 ![INT4 cuts weight memory and traffic; the compute is not entirely INT4](/assets/day2-int4-inference.png)
 *INT4 cuts weight memory and traffic; the compute is not entirely INT4.*
 
@@ -154,24 +152,24 @@ My take: LLM.int8 is the honest baseline. It proves the core idea, half the memo
 
 Three methods, three different answers to the same outlier problem.
 
-SmoothQuant attacks outliers from the other side. The layer is Y = X times W. For any per channel scale s, X times W equals (X divided by s) times (W times s). So SmoothQuant can shrink the spike in X and move that magnitude into W instead.
+SmoothQuant attacks outliers from the other side. Every layer is just a multiplication: the input X times the weights W gives the output Y. For any per column scale s, X times W equals (X divided by s) times (W times s). So SmoothQuant can shrink the spike in X and move that size into W instead.
 
-Concretely, for each channel it sets s equal to (max of X in that channel, to the power alpha) divided by (max of W in that channel, to the power 1 minus alpha), with alpha around 0.5. The dial alpha decides how much difficulty moves: at 0 all of it stays in X, at 1 all of it moves to W.
+In practice it picks, for each column, a scale s. The formula is s = (biggest activation in that column to the power alpha) divided by (biggest weight in that column to the power 1 minus alpha), with alpha around 0.5.
 
-The symbols: `X` is the activation for that channel, `W` is the weight for that channel, `s` is the per channel scale SmoothQuant computes, and `alpha` is the dial, about 0.5, that splits the difficulty between activations and weights.
+The symbols: `X` is the activation for that column, `W` is the weight for that column, `s` is the per column scale SmoothQuant computes, and `alpha` is the dial, about 0.5, that splits the difficulty between activations and weights.
 
-X becomes clean INT8 using a scale per token, W absorbs the variation and quantizes well per channel. Both sides INT8, no FP16 half, no split penalty. SmoothQuant moved the fragile outlier difficulty out of activations and into the calm weights.
+The dial alpha decides how much difficulty moves: at 0 all of it stays in X, at 1 all of it moves to W. So X becomes clean INT8 with one scale per token, and W takes on the difference and quantizes well per column. Both sides INT8, no FP16 half, no need to run two separate calculations. SmoothQuant moved the fragile outlier difficulty out of activations and into the calm weights.
 
 ![SmoothQuant migrates scaling from activations into weights so the activation distribution becomes easy to quantize to INT8](/assets/day2-smoothquant.png)
 *SmoothQuant moves quantization difficulty from activations into weights.*
 
-GPTQ pushes weights to INT4. Its insight: minimize error in the layer output Y, not per weight. It quantizes one column, then immediately adjusts the not yet quantized columns to cancel that column's error in Y. Each mistake is absorbed by columns still ahead. By the end every weight is INT4 but the output stays close to the original. The mental model: paint one strip, fix the spill beside it before moving on.
+GPTQ pushes weights to INT4. Its idea: keep the final output of the layer as close as possible, not each weight on its own. It quantizes one column, then immediately fixes the mistake that column would cause in the columns not yet done. By the end every weight is INT4 but the output stays close to the original. The mental model: paint one strip, fix the spill beside it before moving on.
 
-How does it know each weight's importance to Y? From the calibration data. The sensitivity of Y to a weight is captured by the activation covariance, the matrix X transpose X over the calibration set, which stands in for the Hessian. Weights whose columns matter more to Y get corrected harder. GPTQ also uses group wise quantization, one scale per 128 columns, which is the q_group_size you see in the AWQ code below. The symbols: `q_group_size` is how many columns share one scale (128 here), and the Hessian is the stand in for how sensitive the layer output is to each weight, estimated from the activation covariance X transpose X over a small calibration set.
+How does it know which weights matter most to the output? From a small sample of normal inputs. How much the output cares about each weight is measured from that sample, using a standard math tool (the Hessian, estimated from X times X over the sample). Weights whose columns matter more get corrected harder. GPTQ also uses group quantization: it shares one scale across every 128 columns. That is the q_group_size you see in the AWQ code below. The symbols: `q_group_size` is how many columns share one scale (128 here), and the Hessian is the stand in for how sensitive the layer output is to each weight, estimated from the activation covariance X transpose X over a small calibration set.
 
-AWQ agrees outliers matter but protects before quantizing. It finds the salient channels from the calibration activations: a channel is salient if its average input magnitude is large, because multiplying a large input by that weight drives the output.
+AWQ agrees outliers matter but protects before quantizing. It finds the important columns from the sample inputs: a column is important if its average input size is large, because multiplying a large input by that weight drives the output.
 
-AWQ scales those salient channels up through the same X/s times W times s identity, so INT4 spends its 16 marks on what matters, then divides the scale back out at inference. It uses group wise quantization, one scale per 128 columns, the same q_group_size as GPTQ. No reconstruction loop. The code is short.
+AWQ scales those important columns up through the same X/s times W times s trick, so INT4 spends its 16 marks on what matters, then divides the scale back out at inference. It uses group quantization, one scale per 128 columns, the same q_group_size as GPTQ. No step-by-step fixing. The code is short.
 
 ```python
 from awq import AutoAWQForCausalLM
@@ -194,7 +192,7 @@ Quantizing the KV cache is the same memory idea applied to a different buffer. T
 ![FP16 KV cache blocks become smaller INT8 blocks, shrinking per-token memory so more sequences fit](/assets/day2-kv-cache.png)
 *A smaller KV cache fits more sequences, but measure the accuracy tradeoff.*
 
-Per token scaling works because KV values are bounded, and per head scaling lets each attention head keep its own marks. Caution: a small error in K or V shifts the attention score, and attention is sensitive, so KV cache stays at INT8 while weights go to INT4. FP8 KV cache is best but needs H100 or A100. On a T4 the KV cache stays FP16 and only the weights are quantized. Shrink what you can.
+Per token scaling works because KV values stay within a fixed range, and each attention head can use its own scale. Caution: a small error in K or V shifts the attention score, and attention is sensitive, so KV cache stays at INT8 while weights go to INT4. FP8 KV cache is best but needs H100 or A100. On a T4 the KV cache stays FP16 and only the weights are quantized. Shrink what you can.
 
 My take: quantize the KV cache only after you have measured the quality hit on your own prompts. Attention is unforgiving, so earn the 2x memory win before you trust it.
 
