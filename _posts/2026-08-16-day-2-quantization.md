@@ -14,7 +14,7 @@ Quantization is the part of inference that sounds like a math trick but is reall
 
 When you serve a model, every token forces the GPU to read the entire set of weights out of memory. The speed of that step is roughly weight size divided by memory bandwidth. So if we store each weight in 1 byte instead of 2, we move half the data per token, and decode should get faster. That is the promise. The rest of this post tests whether the promise holds, and on what hardware, and at what cost to quality.
 
-## 1. The one number that explains inference cost
+## 1. Memory bandwidth: the real cost of inference
 
 A forward pass for one token multiplies the input by the weight matrices. The weights are fixed, so for every token the GPU must read all of them from memory. Time per token is roughly weight size in bytes divided by bandwidth. Tokens per second is roughly bandwidth divided by weight size.
 
