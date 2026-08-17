@@ -38,9 +38,11 @@ My take: name your regime before you optimize. On a small model you are overhead
 
 Quantization stores each weight with fewer bits. The cleanest picture is a ruler.
 
-A weight is just a number, say 0.37. To keep that number in the computer you have to write it down somehow. FP16 does it with 16 bits. Sixteen bits can hold 65536 different values, so the ruler is very fine and 0.37 lands almost exactly where it should.
+A weight is just a number, say 0.37. To keep it in the computer you have to write it down somehow. FP16 uses 16 bits, which can describe 65536 different numbers, so 0.37 is written almost exactly.
 
-Quantization does the same thing with fewer bits. Fewer bits means fewer possible values, which means fewer marks on the ruler, which means a coarser ruler. INT8 gives 8 bits, so 256 marks. INT4 gives 4 bits, so 16 marks. We store which mark is closest to the weight, plus one extra number for the gap between marks. That gap is the scale.
+Now imagine we are only allowed 4 bits. Four bits can describe only 16 different numbers. So across the whole spread of weights, our ruler can have only 16 marks. The gap between two marks is the scale. With 16 marks that gap is large, so 0.37 cannot sit exactly on a mark. It rounds to the nearest one, and that small miss is the only error we add. INT8 allows 256 marks, the gap is tiny, and 0.37 lands almost exactly.
+
+So quantization is simple: use a coarser ruler, write down the nearest mark, and keep one extra number for the gap between marks. That extra number is the scale.
 
 ![High-precision weights mapped onto a coarse integer ruler using scale and zero point, then reconstructed approximately](/assets/day2-quantization-scale.png)
 *Quantization maps continuous values onto a smaller set of integer marks.*
