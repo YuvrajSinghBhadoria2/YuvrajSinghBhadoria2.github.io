@@ -16,14 +16,18 @@ When you serve a model, every token forces the GPU to read the entire set of wei
 
 ## 1. Memory bandwidth: the real cost of inference
 
-A forward pass for one token multiplies the input by the weight matrices. The weights are fixed, so for every token the GPU must read all of them from memory. Time per token is roughly weight size in bytes divided by bandwidth. Tokens per second is roughly bandwidth divided by weight size.
+Here is the whole money question in one sentence. Every time the model writes a new token, it has to read its entire set of weights back out of GPU memory. The weights never change, so the GPU pulls the same big pile of numbers, token after token. The speed is therefore set by one thing: how fast the GPU can move those weights out of memory. That speed is called bandwidth.
 
 ![FP16 weights reduced to INT8 then INT4, showing fewer bits means a smaller model and less data moved from memory](/assets/day2-quantization-overview.png)
 *Quantization trades numerical precision for smaller weights and less memory traffic.*
 
-For OPT-125M the weights are 125 million parameters at 2 bytes each, about 250 MB. A T4 has about 320 GB/s of bandwidth, so the best case is 320 divided by 0.25, about 1280 tok/s, if weight reading were the only thing happening. It is not. The previous post measured about 308 tok/s on vLLM and about 37 tok/s on plain transformers. Both sit far below 1280, which tells us that on a model this small, weight reading is not the bottleneck. Overhead is.
+Picture a warehouse. The weights are a fixed pile of boxes. To serve one token, you wheel the whole pile from the back room to the counter. A bigger pile takes longer to move. Quantization is simply making the boxes smaller, so each trip carries less.
 
-My take: name your regime before you optimize. Small model means overhead bound, so quantization will not make it faster. Huge model means memory bound, and quantization is the single biggest lever you have. Everything below is pointless unless you know which one you are in.
+Tokens per second is roughly bandwidth divided by weight size. Bandwidth is how fast memory moves, a T4 does about 320 GB/s. Weight size is how many bytes the model takes up.
+
+Let me make that real with our toy. OPT-125M weights are 125 million numbers at 2 bytes each, about 250 MB, or 0.25 GB. Divide 320 by 0.25 and the ceiling is about 1280 tok/s, but only if reading weights were the only work. It is not. The last post measured about 308 tok/s on vLLM and 37 tok/s on plain transformers. Both are far below 1280, which tells us that on a model this small, reading weights is not what slows it down. Overhead is.
+
+My take: name your regime before you optimize. On a small model you are overhead bound, so quantization will not make it faster, it only makes it smaller. On a huge model you are memory bound, and shrinking the weights is the single biggest win you have. Everything below is pointless until you know which one you are in.
 
 ## 2. The core idea: weights as marks on a ruler
 
