@@ -38,7 +38,9 @@ My take: name your regime before you optimize. On a small model you are overhead
 
 Quantization stores each weight with fewer bits. The cleanest picture is a ruler.
 
-A weight is a number, say 0.37. FP16 stores it precisely with 16 bits. Quantization treats the range as a ruler with a fixed number of marks. INT8 gets 256 marks, INT4 gets 16. We store which mark is closest, plus one number for the step width. That number is the scale.
+A weight is just a number, say 0.37. To keep that number in the computer you have to write it down somehow. FP16 does it with 16 bits. Sixteen bits can hold 65536 different values, so the ruler is very fine and 0.37 lands almost exactly where it should.
+
+Quantization does the same thing with fewer bits. Fewer bits means fewer possible values, which means fewer marks on the ruler, which means a coarser ruler. INT8 gives 8 bits, so 256 marks. INT4 gives 4 bits, so 16 marks. We store which mark is closest to the weight, plus one extra number for the gap between marks. That gap is the scale.
 
 ![High-precision weights mapped onto a coarse integer ruler using scale and zero point, then reconstructed approximately](/assets/day2-quantization-scale.png)
 *Quantization maps continuous values onto a smaller set of integer marks.*
@@ -58,7 +60,7 @@ Here is what each symbol means:
 - `r'` (read r prime) is the value we get back at inference: q times scale. It is close to r but not exact.
 - `scale` is the step width between two marks. It is the one extra number we store next to the marks.
 
-Scale is the step width. Divide the weight by the scale, round to the nearest mark, store q, and at inference multiply q back by scale to get r'. The error between r and r' can never exceed half a step.
+So the flow is: divide the weight by the scale, round to the nearest mark, store q, and at inference multiply q back by scale to get r'. The error between r and r' can never exceed half a step.
 
 A real example makes it stick. Four weights [0.8, -0.2, 0.05, -1.0], INT4, so 15 steps. Biggest absolute value is 1.0, scale = 0.0667.
 
