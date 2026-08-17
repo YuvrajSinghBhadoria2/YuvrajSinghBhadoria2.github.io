@@ -209,6 +209,41 @@ I ran OPT-125M on a T4 across three configurations with the Hugging Face transfo
 | LLM.int8 | 166 MB | 13.9 | 687 | 24.35 | weights halved, quality held |
 | INT4 (NF4) | 123 MB | 55.8 | 687 | 25.11 | weights quartered, quality held |
 
+Reproduce it (the code that produced the table above, run on a T4):
+
+```python
+import time, torch, math
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+mid = "facebook/opt-125m"
+tok = AutoTokenizer.from_pretrained(mid)
+pid = tok("The history of artificial intelligence is", return_tensors="pt").input_ids.to("cuda")
+wiki = "Artificial intelligence is the field of computer science that studies machines able to perform tasks requiring human intelligence. It includes learning, reasoning, and perception."
+
+cfgs = {
+    "FP16":     dict(device_map="auto"),
+    "LLM.int8": dict(quantization_config=BitsAndBytesConfig(load_in_8bit=True), device_map="auto"),
+    "INT4-NF4": dict(quantization_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4"), device_map="auto"),
+}
+
+results = {}
+for name, kw in cfgs.items():
+    torch.cuda.empty_cache()
+    m = AutoModelForCausalLM.from_pretrained(mid, **kw)
+    ts = []
+    for _ in range(3):
+        t0 = time.time()
+        o = m.generate(pid, max_new_tokens=128, temperature=0.7, do_sample=True)
+        ts.append((o.shape[1] - pid.shape[1]) / (time.time() - t0))
+    i = tok(wiki, return_tensors="pt").input_ids.to("cuda")
+    with torch.no_grad():
+        ppl = math.exp(m(i, labels=i).loss.item())
+    param_mb = sum(p.numel() * p.element_size() for p in m.parameters()) / 1e6
+    results[name] = (sum(ts)/3, param_mb, ppl)
+    print(f"{name}: {sum(ts)/3:.1f} tok/s | weights {param_mb:.0f} MB | GPU {torch.cuda.max_memory_allocated()/1e6:.0f} MB | ppl {ppl:.2f}")
+    del m; torch.cuda.empty_cache()
+```
+
 Read it in three passes.
 
 Quality held. Perplexity stays at 24 to 25 across all three. Dropping to half a byte per weight did not break the model. That is the proof the outlier handling works. The tiny row differences are noise from one short sentence, not a trend.
