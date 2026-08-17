@@ -5,14 +5,19 @@ categories: [llm, inference, optimization, quantization]
 permalink: /day-2/
 ---
 
+By Yuvraj Singh Bhadoria.
 
-By Yuvraj Singh Bhadoria
+The last post was about memory and batching. We learned that serving is mostly a memory problem, and that PagedAttention and continuous batching make memory use efficient. This post goes one level deeper. Instead of managing memory better, we make the model itself smaller. That is quantization.
 
-Quantization is the part of inference that sounds like a math trick but is really a memory trick. In the last post we measured that decode is memory bound, not compute bound, and that the weights plus the KV cache are what fill GPU memory. This post asks the obvious next question. What if the weights themselves took less memory? I am writing these as I learn, and this time I actually ran the numbers on a T4 instead of trusting the marketing. By the end you should be able to read any quantization paper or model card and know exactly what is being claimed.
+I am writing these as I learn, measuring everything instead of trusting marketing.
 
 ## 0. The question
 
-When you serve a model, every token forces the GPU to read the entire set of weights out of memory. The speed of that step is roughly weight size divided by memory bandwidth. So if we store each weight in 1 byte instead of 2, we move half the data per token, and decode should get faster. That is the promise. The rest of this post tests whether the promise holds, and on what hardware, and at what cost to quality.
+A model is just a pile of numbers called weights. The bigger the pile, the more memory it takes and the more data the GPU must move to generate each token. So a natural question: can we store those numbers with fewer bits and still get the same answers?
+
+That is quantization. But it is not free. Fewer bits means less precision, and less precision can quietly hurt quality. The job is to throw away bits where it does not matter and keep them where it does.
+
+By the end of this post you should know what INT8 and INT4 actually do, why the naive version fails, how the clever methods fix it, and what my own benchmark on a tiny model showed. Let's go in order.
 
 ## 1. Memory bandwidth: the real cost of inference
 
@@ -70,59 +75,57 @@ One refinement real systems use: the ruler need not be symmetric. You can slide 
 
 The symbols: `w` is the real weight, `w_q` is the stored integer (round(w / scale) plus the zero point), `zero_point` is the shift that lines the first mark up with the data's minimum, and `scale` is the step width from the formula above.
 
-A second refinement is group wise quantization: instead of one scale per whole row, use one scale per small group of 128 columns. More scales, finer fit, and that is how INT4 stays accurate.
-
 My take: if you remember one formula, remember r' = q * scale. Everything else is just deciding where to put the marks and how many scales to keep.
 
 ## 3. The precision spectrum
 
-A trained model is usually FP16, 2 bytes per weight. The formats you will meet are points on the bits versus accuracy tradeoff.
+Precision is just how many bits we give each number. More bits, more room to be exact. Fewer bits, smaller and faster to move but rougher.
 
+- FP32, 4 bytes. Training only. Too big to serve.
+- FP16, 2 bytes. The normal way to serve. Half precision.
+- BF16, 2 bytes. Same size as FP16 but keeps a wider range, so training stays stable. For serving it is close to FP16.
+- INT8, 1 byte. Half the size of FP16. Now we are quantizing.
+- FP8, 1 byte. A format built for AI math, but only on new GPUs like H100 or L40. Most of us cannot use it yet.
+- INT4 or NF4, half a byte. A quarter of FP16. This is where the real memory win comes from.
 
-
-- FP32, 4 bytes. Training only, too big to serve.
-- FP16, 2 bytes. Normal serving format.
-- BF16, 2 bytes but with FP32's range and less precision. Training favorite, close enough to FP16 for serving.
-- INT8, 1 byte. Half of FP16, runs on almost any GPU including the T4.
-- FP8, 1 byte float. Needs H100 or L40 class hardware. A T4 cannot do it.
-- INT4, half a byte. Quarter of FP16. Where most LLM quantization research lives.
-- INT2 and 1 bit, research only, large quality loss.
-
-Halve the bits and you roughly halve the memory, which can mean up to 2x the decode ceiling. But only when weight reading is the bottleneck. On a 70B model the weights are 140 GB and reading dominates, so halving is decisive. On OPT-125M it is hidden by overhead.
+The pattern is the point. Every time you halve the bits, you halve the bytes, so you halve the memory and the data moved. INT8 is half of FP16, INT4 is a quarter. That is the whole game.
 
 My take: pick the format your hardware can actually run. A T4 does INT8 and INT4. FP8 needs an H100 or L40. Format envy is wasted if your GPU cannot compute it.
 
 ## 4. What actually gets quantized
 
-A forward pass carries three kinds of numbers, not equally easy to shrink.
+Three things in a model hold numbers: the weights, the activations, and the KV cache. They are not equally easy to quantize.
 
-![A transformer split into weights, activations, and KV cache, three different quantization problems](/assets/day2-what-gets-quantized.png)
-*Weights, activations, and KV cache are three separate engineering problems.*
+Weights are the easiest. They are fixed after training. You can look at the whole weight matrix once, pick scales, and store the small version. Do it once, use it forever.
 
-- Weights are fixed after training. This is what people mean by quantization. Compute scales once, reuse forever.
-- Activations are fresh every token, range shifts constantly, hard to quantize because of outliers.
-- The KV cache is the cached Key and Value from the last post. It grows with context and is the memory hog we found there.
+The KV cache is next. It grows per token, so it behaves a bit like activations, but it is bounded per token and per head, so a per token scale works well.
 
-So weights are easy, KV cache is easy-ish, activations are the trap. The rest of this post is how people avoid that trap.
+Activations are the trap. They are the numbers flowing through the model at inference time, and they change with every input. You cannot precompute a scale, because you do not know the input yet. Worse, activations have rare huge spikes, and those spikes break naive quantization. Most of the clever work in this post is about activations, not weights.
 
-My take: weights are a solved problem. Activations are the unsolved one. Almost all the clever work below is about activations, not weights.
+![Weights are static and easy to quantize, the KV cache is bounded per token, and activations are dynamic with outlier spikes](/assets/day2-what-gets-quantized.png)
+*Weights are easy, the KV cache is easy-ish, activations are the trap.*
+
+My take: weights are a solved problem. Activations are the unsolved one. If a method name sounds fancy, it is almost always fighting the activation outliers.
 
 ## 5. The outlier problem, and how to fit the ruler
 
-Activations hold a few channels 10 to 100 times larger than the rest. Call them outliers. One global ruler forces a huge scale, and every normal value gets crushed into a single mark. That is why naive rounding fails on transformers.
+Here is the trap, made concrete. Look at one layer's activation for a token: most values sit near zero, but a few channels spike to 50 or 100 while the rest are under 1. If you pick one scale for the whole row, that scale is set by the spike. Everything small then rounds to almost zero and the signal dies.
 
-Why do outliers appear at all? In a transformer the attention layer runs a softmax over the tokens, and a few channels spike when one token dominates that softmax. Those spikes are the outliers. They change for every token, so activations need a scale per token, while weights are fixed and get a scale per row. That mismatch, per token for activations versus per row for weights, is exactly why activations are the hard part and weights are the easy part.
+![Activations have rare large spikes in a few channels, which break a single uniform scale](/assets/day2-outliers.png)
+*Rare spikes in a few channels dominate a single scale and crush the small values.*
 
-![A single large activation outlier stretches the INT8 range so normal values are crushed into one region](/assets/day2-outliers.png)
-*One outlier forces a huge scale, crushing the normal values.*
+This is why "just round the weights to 8 bits" works but "just round the activations to 8 bits" collapses. The weights are calm. The activations are not.
 
-Two practical fixes come from the ruler picture. Per channel scaling gives each row its own scale, so small rows keep their marks. Without it, quality collapses. Post training quantization, PTQ, computes scales from a few hundred normal sentences, no retraining. That is what vLLM, bitsandbytes, GPTQ, and AWQ all ship.
-
-My take: once this clicks, the field stops looking like tricks. LLM.int8, SmoothQuant, GPTQ, AWQ are four answers to one question: where do the big values go so the small ones keep their marks? Remember that. It is the spine of everything below.
+My take: the entire field of quantization for LLMs exists because of a handful of outlier channels. Remember that picture, because every method below is a different answer to it.
 
 ## 6. LLM.int8: isolate the outliers
 
-LLM.int8, from Dettmers and others in 2022, leaves outlier columns in FP16 and quantizes the normal columns to INT8, then adds the two results. Outliers pulled out first means they no longer inflate the normal scale. It uses vector wise quantization, picking the scale per row of the activation and per group of columns rather than one scale for the whole tensor, so each part keeps its marks. The mixed precision matmul is really two matmuls, one in INT8 and one in FP16, added at the end. Net memory about half, accuracy near FP16. The code is one line.
+LLM.int8, from Dettmers and others in 2022, takes the simplest possible answer: do not quantize the spikes. Leave the outlier columns in full precision (FP16) and quantize the calm columns to INT8, then add the two results back together.
+
+![LLM.int8 splits the matrix so normal values take the INT8 path and outlier values stay in FP16, then combines](/assets/day2-llm-int8.png)
+*Most values use INT8; rare outliers stay in FP16.*
+
+The code is one line:
 
 ```python
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
@@ -134,14 +137,18 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 ```
 
-![LLM.int8 splits the matrix so normal values take the INT8 path and outlier values stay in FP16, then combines](/assets/day2-llm-int8.png)
-*Most values use INT8; rare outliers stay in FP16.*
+Net memory about half, accuracy near FP16. It proves the idea with the smallest possible change.
 
-NF4, Normal Float 4, is a 4 bit format tuned to how weights are distributed, not a uniform ruler. Its 16 marks are placed at the quantiles of the weight distribution, so more marks sit where weights cluster and fewer at the rare edges. It is what QLoRA uses for fine tuning in 4 bit.
+![INT4 cuts weight memory and traffic; the compute is not entirely INT4](/assets/day2-int4-inference.png)
+*INT4 cuts weight memory and traffic; the compute is not entirely INT4.*
+
+NF4, Normal Float 4, is a 4 bit format tuned to how weights are actually distributed, not a uniform ruler. Its 16 marks sit where weights cluster. It is what QLoRA uses for fine tuning in 4 bit.
 
 My take: LLM.int8 is the honest baseline. It proves the core idea, half the memory with the same quality, using the smallest possible change. Everything after it is about going smaller or faster.
 
 ## 7. SmoothQuant, GPTQ, and AWQ
+
+Three methods, three different answers to the same outlier problem.
 
 SmoothQuant attacks outliers from the other side. The layer is Y = X times W. For any per channel scale s, X times W equals (X divided by s) times (W times s). So SmoothQuant can shrink the spike in X and move that magnitude into W instead.
 
@@ -169,27 +176,21 @@ model = AutoAWQForCausalLM.from_pretrained(
     "meta-llama/Llama-3.2-1B",
     safetensors=False,
 )
-model.quantize(tokenizer, quant_config={"w_bit": 4, "q_group_size": 128})
 ```
 
-![GPTQ minimizes reconstruction error after quantizing, while AWQ protects salient channels before quantizing, both reaching INT4](/assets/day2-gptq-vs-awq.png)
-*GPTQ fixes the error after; AWQ protects the important weights first.*
+![GPTQ and AWQ both reach INT4 weights, but take different paths: GPTQ repairs after, AWQ protects before](/assets/day2-gptq-vs-awq.png)
+*GPTQ fixes errors after quantizing; AWQ protects important channels before.*
 
-Put GPTQ and AWQ side by side. GPTQ quantizes first and repairs after. AWQ reshapes so the damage never lands. Same destination, different route.
-
-My take: if you only serve one quantized model, AWQ is the safe default. Fast to apply, no heavy reconstruction, native in vLLM. GPTQ still wins at very low bits sometimes, but for most serving the difference is small and AWQ's simplicity pays off.
-
-![INT4 weight-only inference loads fewer weight bytes from HBM, dequantizes, then multiplies, so compute is not all INT4](/assets/day2-int4-inference.png)
-*INT4 cuts weight memory and traffic; the compute is not entirely INT4.*
+My take: you do not need to memorize the math. Remember the shape of each answer. SmoothQuant moves difficulty. GPTQ repairs it. AWQ prevents it. All three exist because of the same outlier channels.
 
 ## 8. Quantizing the KV cache
 
-The KV cache is the direct continuation of the memory story. It grows every token and fills GPU memory first. Quantizing it to INT8 halves that growth.
+Quantizing the KV cache is the same memory idea applied to a different buffer. The KV cache grows every token and fills GPU memory first, so shrinking it fits more sequences.
 
 ![FP16 KV cache blocks become smaller INT8 blocks, shrinking per-token memory so more sequences fit](/assets/day2-kv-cache.png)
 *A smaller KV cache fits more sequences, but measure the accuracy tradeoff.*
 
-KV values are bounded per token, so per token scaling works, and per head scaling is used so each attention head keeps its own marks. Caution: a small error in K or V shifts the attention score, and attention is sensitive, so KV cache stays at INT8 while weights go to INT4. FP8 KV cache is best but needs H100 or A100. On a T4 the KV cache stays FP16 and only the weights are quantized. Shrink what you can.
+Per token scaling works because KV values are bounded, and per head scaling lets each attention head keep its own marks. Caution: a small error in K or V shifts the attention score, and attention is sensitive, so KV cache stays at INT8 while weights go to INT4. FP8 KV cache is best but needs H100 or A100. On a T4 the KV cache stays FP16 and only the weights are quantized. Shrink what you can.
 
 My take: quantize the KV cache only after you have measured the quality hit on your own prompts. Attention is unforgiving, so earn the 2x memory win before you trust it.
 
@@ -218,74 +219,44 @@ A note on AWQ: the autoawq library does not support OPT-125M, so it has no measu
 
 My take: the number that matters for your career is the memory one. Nobody hires an inference engineer to shave 50 tok/s off a 125M toy. They hire one to fit a 70B model on hardware that should not hold it, or to serve ten times more users on one box. Quantization does that. Speed is a bonus that appears exactly when the model is big enough to need it.
 
-Reproduce it:
-
-```python
-import time, torch, math
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-mid = "facebook/opt-125m"
-tok = AutoTokenizer.from_pretrained(mid)
-pid = tok("The history of artificial intelligence is", return_tensors="pt").input_ids.to("cuda")
-wiki = "Artificial intelligence is the field of computer science that studies machines able to perform tasks requiring human intelligence. It includes learning, reasoning, and perception."
-
-cfgs = {
-    "FP16":     dict(device_map="auto"),
-    "LLM.int8": dict(quantization_config=BitsAndBytesConfig(load_in_8bit=True), device_map="auto"),
-    "INT4-NF4": dict(quantization_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4"), device_map="auto"),
-}
-
-for name, kw in cfgs.items():
-    torch.cuda.empty_cache()
-    m = AutoModelForCausalLM.from_pretrained(mid, **kw)
-    ts = []
-    for _ in range(3):
-        t0 = time.time()
-        o = m.generate(pid, max_new_tokens=128, temperature=0.7, do_sample=True)
-        ts.append((o.shape[1] - pid.shape[1]) / (time.time() - t0))
-    i = tok(wiki, return_tensors="pt").input_ids.to("cuda")
-    with torch.no_grad():
-        ppl = math.exp(m(i, labels=i).loss.item())
-    mb = sum(p.numel() * p.element_size() for p in m.parameters()) / 1e6
-    print(f"{name}: {sum(ts)/3:.1f} tok/s | weights {mb:.0f} MB | GPU {torch.cuda.max_memory_allocated()/1e6:.0f} MB | ppl {ppl:.2f}")
-```
-
-The printed output:
-
-```
-FP16: 37.0 tok/s | weights 250 MB | GPU 687 MB | ppl 24.90
-LLM.int8: 13.9 tok/s | weights 166 MB | GPU 687 MB | ppl 24.35
-INT4-NF4: 55.8 tok/s | weights 123 MB | GPU 687 MB | ppl 25.11
-```
-
 ## Takeaway
 
-Quantization is one idea with four fixes.
+Quantization is not magic. It is storing the model's numbers with fewer bits.
 
-1. Weights become marks on a ruler, with a per row scale so every row keeps its marks, done after training on a small calibration set.
-2. Naive rounding fails because activations hold outliers that blow up the scale. Every real method handles outliers.
-3. LLM.int8 isolates outliers in FP16. SmoothQuant moves the difficulty into weights. GPTQ repairs column errors. AWQ protects salient channels up front.
-4. The KV cache quantizes too, to INT8, and FP8 is best if your hardware allows it.
+1. The cost is memory traffic. Decode speed is set by bandwidth over weight size. Shrink the weights and you shrink the cost.
+2. Naive quantization fails because activations have rare outlier spikes. A single scale set by the spike crushes the small values.
+3. The methods split into three moves. SmoothQuant moves the difficulty into weights, GPTQ repairs it after, AWQ prevents it before. All three exist for the same outlier channels.
+4. On a small model quantization saves memory but may not speed things up. On a large model it is the single biggest lever you have.
+5. Measure, do not trust. My benchmark held quality at a quarter of the weight size, and the speed win was hidden only because the model was too small for overhead to matter.
 
-The takeaway that survives: quantization is a memory lever, not a speed lever, for models this size. It fits a 70B model on one GPU and keeps quality usable. Measure the memory win, trust the quality hold, expect the speed win only when weight reading is the bottleneck.
+That is the whole game of quantization.
 
 ## Day 2 summary
 
-![Day 2 summary: from memory bound decode to ruler quantization, outliers, four methods, and a measured benchmark](/assets/day2-quantization-overview.png)
+![Quantization shrinks weights from FP16 to INT8 to INT4, moving the memory bottleneck and enabling larger models on the same hardware](/assets/day2-quantization-overview.png)
+*Quantization trades precision for smaller weights and less memory traffic.*
 
 ## Next (Day 3)
 
-In the next post we go one level up from the weights into the serving engine, and look at how the scheduler decides which requests run together and how continuous batching keeps the GPU full. That closes the loop from memory bound decode to a full picture of a serving system.
+Serving many models on one box. How to pack them, route them, and keep the GPU full without wasting memory.
 
 ## Visual references
 
-The diagrams in this article are original sketchnote illustrations created for this article. Their technical concepts were informed by the LLM.int8, SmoothQuant, GPTQ, and AWQ papers listed in References, and by the memory bound decode view from the JAX Scaling Book inference chapter (MIT licensed) and NVIDIA inference optimization material.
+The diagrams in this article are original illustrations created for this article. Their technical concepts were informed by the following work:
+
+- SmoothQuant (Xiao et al., 2023).
+- GPTQ (Frantar et al., 2022).
+- AWQ (Lin et al., 2023).
+- LLM.int8 (Dettmers et al., 2022).
+- NF4 and QLoRA (Dettmers et al., 2023).
+- NVIDIA Hopper (FP8) and Tesla T4 datasheets.
 
 ## References
 
-- Dettmers et al., LLM.int8: 8 bit Matrix Multiplication for Transformers at Scale, 2022.
-- Xiao et al., SmoothQuant: Accurate and Efficient Post Training Quantization for LLM, 2023.
-- Frantar et al., GPTQ: Accurate Post Training Quantization for Generative Pre trained Transformers, 2023.
-- Lin et al., AWQ: Activation aware Weight Quantization for LLM Compression and Acceleration, 2023.
-- OPT model card, Meta AI and Hugging Face.
+- Dettmers et al., LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale, 2022.
+- Xiao et al., SmoothQuant: Accurate and Efficient Post-Training Quantization for LLMs, 2023.
+- Frantar et al., GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers, 2022.
+- Lin et al., AWQ: Activation-aware Weight Quantization, 2023.
+- Dettmers et al., QLoRA: Efficient Finetuning of Quantized LLMs, 2023.
 - NVIDIA Tesla T4 datasheet.
+- OPT model card, Meta AI / Hugging Face.
