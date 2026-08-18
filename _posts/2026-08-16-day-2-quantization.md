@@ -275,7 +275,7 @@ That is the whole game of quantization.
 
 ## Next (Day 3)
 
-Serving many models on one box. How to pack them, route them, and keep the GPU full without wasting memory.
+The KV cache. Why a long chat eats more GPU memory than the model itself, and how quantizing the cache fixes it.
 
 ## Visual references
 
