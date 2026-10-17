@@ -132,6 +132,8 @@ Optimize those three and you cut the bill without touching model quality. That i
 
 Quantization. Shrink the model weights so each decode step loads less from memory, then re-measure. We will see if ~308 tok/s goes up, and be honest about how much of the gain is real versus measurement noise.
 
+**[Continue to Day 2: Quantization →](/day-2/)** · [Series index](/start-here/)
+
 ## Visual references
 
 The diagrams in this article are original illustrations created for this article. Their technical concepts were informed by NVIDIA's inference optimization material, the JAX Scaling Book's inference chapter (MIT licensed), and the PagedAttention/vLLM work. Source images per component:

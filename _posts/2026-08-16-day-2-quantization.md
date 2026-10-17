@@ -277,6 +277,8 @@ That is the whole game of quantization.
 
 The KV cache. Why a long chat eats more GPU memory than the model itself, and how quantizing the cache fixes it.
 
+[← Day 1: Prefill, Decode & PagedAttention](/day-1/) · **[Continue to Day 3: The KV Cache →](/day-3/)**
+
 ## Visual references
 
 The diagrams in this article are original illustrations created for this article. Their technical concepts were informed by the following work:

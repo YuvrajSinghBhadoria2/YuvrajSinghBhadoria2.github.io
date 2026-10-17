@@ -198,3 +198,7 @@ The diagrams in this article are original illustrations created for this article
 - Dao et al., FlashAttention: Fast and Memory-Efficient Attention, 2022.
 - NVIDIA FP8 and Tesla T4 datasheets.
 - OPT model card, Meta AI and Hugging Face.
+
+## Next
+
+[← Day 2: Quantization](/day-2/) · **[Demystifying Speculative Decoding →](/spec-decoding-blog/)** · [Series index](/start-here/)
