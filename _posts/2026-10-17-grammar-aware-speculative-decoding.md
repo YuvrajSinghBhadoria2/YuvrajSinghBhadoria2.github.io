@@ -5,7 +5,62 @@ categories: [llm, inference, optimization, speculative-decoding, vllm]
 permalink: /grammar-spec-decoding/
 ---
 
+
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+/* make this post render like the standalone editorial design */
+body, .post-content, .post-content p, .post-content ul, .post-content ol {
+  font-family: 'Source Serif 4', Georgia, serif !important;
+}
+.post-content { font-size: 19px !important; line-height: 1.72 !important; color: #2c2c2c !important; }
+.post-content p { margin: 20px 0 !important; }
+.post-content strong { color: #1a1a1a; font-weight: 600; }
+.post-content a { color: #14544a; text-decoration-thickness: 1px; text-underline-offset: 2.5px; }
+.post-title {
+  font-family: 'Source Serif 4', Georgia, serif !important;
+  font-size: clamp(30px, 4.6vw, 42px) !important;
+  font-weight: 600 !important; line-height: 1.16 !important;
+  letter-spacing: -0.01em !important; color: #1a1a1a !important;
+  max-width: 21ch;
+}
+.post-meta, .post-tags, .post-footer {
+  font-family: 'IBM Plex Sans', sans-serif !important;
+  color: #6b6b6b !important; font-size: 13.5px !important;
+  letter-spacing: .06em; text-transform: uppercase;
+}
+.post-content h2 {
+  font-family: 'Source Serif 4', Georgia, serif !important;
+  font-size: 26px !important; font-weight: 600 !important;
+  color: #1a1a1a !important; line-height: 1.3 !important;
+  margin: 56px 0 4px !important; border: none !important;
+}
+.post-content h3 {
+  font-family: 'Source Serif 4', Georgia, serif !important;
+  font-size: 20.5px !important; font-weight: 600 !important;
+  color: #1a1a1a !important; margin: 36px 0 2px !important;
+}
+.post-content ul li, .post-content ol li { margin: 8px 0; }
+.post-content blockquote {
+  font-family: 'Source Serif 4', Georgia, serif !important;
+  font-style: italic; color: #6b6b6b; font-size: 19px;
+  border-left: 2px solid #e6e4e0; padding-left: 22px;
+  box-shadow: none !important; margin: 34px 0;
+}
+.post-content code {
+  font-family: 'IBM Plex Mono', monospace !important;
+  font-size: .85em; background: #f7f6f4; border: 1px solid #e6e4e0;
+  border-radius: 4px; padding: 1.5px 6px; color: #333;
+}
+.post-content pre {
+  font-family: 'IBM Plex Mono', monospace !important;
+  background: #f7f6f4 !important; border: 1px solid #e6e4e0 !important;
+  border-radius: 8px !important; box-shadow: none !important;
+  color: #333; font-size: 14.5px; line-height: 1.75;
+}
+.post-content pre code { background: none; border: none; padding: 0; font-size: inherit; color: inherit; }
+.site-header .site-title { font-family: 'Source Serif 4', Georgia, serif !important; font-weight: 600 !important; }
+
 .gsd-fig{margin:28px 0}
 .gsd-fig svg{max-width:100%;height:auto;border:1px solid #e6e4e0;border-radius:8px;background:#fff}
 .gsd-fig .cap{font-size:.92em;color:#6b6b6b;margin-top:10px;line-height:1.55}
